@@ -1,0 +1,18 @@
+{
+  "Whispers of Magic": {
+    "url": "https://github.com/qweqwe24011-debug/Pownlauncher/releases/download/1.0/Whispers.of.Magic.zip",
+    "version": "1.0.1",
+    "description": "Магическая сборка с 90+ модов",
+    "mc_version": "1.20.1",
+    "loader": "forge",
+    "author": "Pownkd"
+  },
+  "SuperHeroes": {
+    "url": "https://github.com/qweqwe24011-debug/Pownlauncher/releases/download/1.1/SuperHeroes.zip",
+    "version": "1.0.0",
+    "description": "Сборка с супергеройскими модами",
+    "mc_version": "1.20.1",
+    "loader": "forge",
+    "author": "Pownkd"
+  }
+}
