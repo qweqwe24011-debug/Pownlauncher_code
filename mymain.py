@@ -188,27 +188,27 @@ class UITaskManager:
         self.window = window
         self._handlers: dict[str, tuple[callable, callable]] = {}
 
-    def start_task(self, task_id, on_progress, on_finished):
+    def start_task(self, target_task_id, on_progress, on_finished):
         """Подписаться на download_progress и task_finished для task_id."""
-        def progress_handler(task_id_evt, current, total, status_text):
-            if task_id_evt != task_id:
+        def progress_handler(task_id, current, total, status_text):
+            if task_id != target_task_id:
                 return
             self.window.after(0, lambda: on_progress(current, total, status_text))
 
-        def finished_handler(task_id_evt, success, message):
-            if task_id_evt != task_id:
+        def finished_handler(task_id, success, message):
+            if task_id != target_task_id:
                 return
             self.window.after(0, lambda: on_finished(success, message))
             # Автоотписка
-            self.cancel_task(task_id)
+            self.cancel_task(target_task_id)
 
         self.event_bus.subscribe("download_progress", progress_handler)
         self.event_bus.subscribe("task_finished", finished_handler)
-        self._handlers[task_id] = (progress_handler, finished_handler)
+        self._handlers[target_task_id] = (progress_handler, finished_handler)
 
-    def cancel_task(self, task_id):
+    def cancel_task(self, target_task_id):
         """Принудительная отписка по task_id."""
-        handlers = self._handlers.pop(task_id, None)
+        handlers = self._handlers.pop(target_task_id, None)
         if handlers:
             prog, fin = handlers
             self.event_bus.unsubscribe("download_progress", prog)
@@ -216,8 +216,8 @@ class UITaskManager:
 
     def cleanup(self):
         """Отписать все активные задачи (при закрытии окна)."""
-        for task_id in list(self._handlers.keys()):
-            self.cancel_task(task_id)
+        for target_task_id in list(self._handlers.keys()):
+            self.cancel_task(target_task_id)
 
 
 # ---------- main window ----------
