@@ -12,35 +12,35 @@ import clodmain
 ctk.set_appearance_mode("dark")
 
 # ============================================================
-#  MINECRAFT MATERIALS THEME
+#  REAL MINECRAFT BLOCKS THEME (база #222223)
 # ============================================================
-BG = "#1E1E2E"                # Deepslate (глубинный сланец) — основной фон окна
-BG_CARD = "#2D2D3D"           # Netherite (незерит) — карточки, блоки
-BG_CARD_HOVER = "#3D3D4D"     # Светлее при наведении
-BG_INPUT = "#252535"          # Поля ввода (чуть темнее карточек)
+BG = "#222223"                # Гладкий базальт — основной фон (нейтральный графит)
+BG_CARD = "#2B2B2B"           # Уголь — карточки, блоки
+BG_CARD_HOVER = "#383838"     # Светлее при наведении
+BG_INPUT = "#1A1A1A"          # Обсидиан — поля ввода (глубина)
 
-STONE_LIGHT = "#4A4A5A"       # Светлый камень (для кнопок)
-STONE_DARK = "#3A3A4A"        # Тёмный камень
-STONE_BORDER = "#3D3D4D"      # Рамка (границы блоков)
+STONE_LIGHT = "#7F7F7F"       # Камень — светлые кнопки
+STONE_DARK = "#4E4B4C"        # Гладкий базальт — тёмные кнопки
+STONE_BORDER = "#3B3B3B"      # Рамка блоков
 
-ACCENT = "#3D7A3D"            # Moss (мох) — основной акцент, кнопка ИГРАТЬ
-ACCENT_HOVER = "#4D8A4D"      # Светлее при наведении
-ACCENT_DARK = "#2D5A2D"       # Тёмный мох
+ACCENT = "#596436"            # Мох — основной акцент, кнопка ИГРАТЬ
+ACCENT_HOVER = "#6B7A42"      # Светлее при наведении
+ACCENT_DARK = "#46522A"       # Тёмный мох
 
-DANGER = "#8B0000"            # Redstone (редстоун) — кнопки удаления
-DANGER_HOVER = "#A52A2A"      # Светлее при наведении
-DANGER_DARK = "#6B0000"       # Тёмный редстоун
+DANGER = "#961A1A"            # Редстоуновый блок — кнопки удаления
+DANGER_HOVER = "#B02020"      # Светлее при наведении
+DANGER_DARK = "#701414"       # Тёмный редстоун
 
-WARNING = "#B8860B"           # Gold (золото) — обновления, предупреждения
-SUCCESS = "#3D7A3D"           # Moss (мох) — успех
-ERROR = "#CC3333"             # Яркий редстоун для текстов ошибок (чтобы не сливался с кнопками)
+WARNING = "#D4A017"           # Золотой блок (приглушённый) — обновления
+SUCCESS = "#2FCB54"           # Изумрудный блок — успех
+ERROR = "#FF3B3B"             # Редстоун (яркий) — тексты ошибок
 
-TEXT_PRIMARY = "#E0E0E0"      # Skeleton (кость) — основной текст
-TEXT_SECONDARY = "#A0A0B0"    # Stone (камень) — вторичный текст
-TEXT_MUTED = "#808090"        # Приглушённый текст (чуть светлее для читаемости на тёмном фоне)
-TEXT_SHADOW = "#1A1A2A"       # Тень текста
+TEXT_PRIMARY = "#E5E0D0"      # Костный блок — основной текст
+TEXT_SECONDARY = "#A0A0A0"    # Камень — вторичный текст
+TEXT_MUTED = "#7A7A7A"        # Приглушённый текст
+TEXT_SHADOW = "#100D17"       # Обсидиан — тень текста
 
-BORDER = "#3D3D4D"            # Границы
+BORDER = "#3B3B3B"            # Границы блоков
 
 # Шрифт в стиле Minecraft (monospace bold)
 MC_FONT = ("Consolas", 13, "bold")
@@ -49,12 +49,12 @@ MC_FONT_SMALL = ("Consolas", 11, "bold")
 MC_FONT_TITLE = ("Consolas", 26, "bold")
 
 LOADER_INFO = {
-    "vanilla":  {"label": "Vanilla",   "color": "#3D7A3D", "bg": "#1A3A1A"},  # Moss (Зелёный)
-    "forge":    {"label": "Forge",     "color": "#B8860B", "bg": "#3A2A0A"},  # Gold (Золотой)
-    "fabric":   {"label": "Fabric",    "color": "#4A90E2", "bg": "#1A2A4A"},  # Diamond (Голубой)
-    "neoforge": {"label": "NeoForge",  "color": "#D2691E", "bg": "#3A1F0A"},  # Chocolate (Оранжевый)
-    "quilt":    {"label": "Quilt",     "color": "#9370DB", "bg": "#2A1A3A"},  # Purpur (Фиолетовый)
-    "build":    {"label": "Сборка",    "color": "#E0E0E0", "bg": "#3D3D4D"},  # Bedrock (Серый/Белый)
+    "vanilla":  {"label": "Vanilla",   "color": "#7CBD6B", "bg": "#2A3B1A"},  # Трава
+    "forge":    {"label": "Forge",     "color": "#D8D8D8", "bg": "#3A3A3A"},  # Железо
+    "fabric":   {"label": "Fabric",    "color": "#62E5D8", "bg": "#1A3A3A"},  # Алмаз
+    "neoforge": {"label": "NeoForge",  "color": "#B4653A", "bg": "#3A2A1A"},  # Медь
+    "quilt":    {"label": "Quilt",     "color": "#A97DAB", "bg": "#2A1A2A"},  # Пурпур
+    "build":    {"label": "Сборка",    "color": "#E5E0D0", "bg": "#3B3B3B"},  # Кость
 }
 
 _all_loaders = [("Vanilla", "vanilla"), ("Forge", "forge"), ("Fabric", "fabric"),
@@ -192,13 +192,13 @@ class UITaskManager:
         """Подписаться на download_progress и task_finished для task_id."""
         target_task_id = task_id
         
-        def progress_handler(task_id_evt, current, total, status_text):
-            if task_id_evt != target_task_id:
+        def progress_handler(task_id, current, total, status_text):
+            if task_id != target_task_id:
                 return
             self.window.after(0, lambda: on_progress(current, total, status_text))
 
-        def finished_handler(task_id_evt, success, message):
-            if task_id_evt != target_task_id:
+        def finished_handler(task_id, success, message):
+            if task_id != target_task_id:
                 return
             self.window.after(0, lambda: on_finished(success, message))
             # Автоотписка
@@ -208,9 +208,9 @@ class UITaskManager:
         self.event_bus.subscribe("task_finished", finished_handler)
         self._handlers[target_task_id] = (progress_handler, finished_handler)
 
-    def cancel_task(self, task_id):
+    def cancel_task(self, target_task_id):
         """Принудительная отписка по task_id."""
-        handlers = self._handlers.pop(task_id, None)
+        handlers = self._handlers.pop(target_task_id, None)
         if handlers:
             prog, fin = handlers
             self.event_bus.unsubscribe("download_progress", prog)
@@ -218,8 +218,8 @@ class UITaskManager:
 
     def cleanup(self):
         """Отписать все активные задачи (при закрытии окна)."""
-        for task_id in list(self._handlers.keys()):
-            self.cancel_task(task_id)
+        for target_task_id in list(self._handlers.keys()):
+            self.cancel_task(target_task_id)
 
 
 # ---------- main window ----------

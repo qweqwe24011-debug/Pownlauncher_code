@@ -1495,8 +1495,11 @@ def is_custom_installed(name: str) -> bool:
     return _get_engine().install.is_custom_installed(name)
 
 
-def install_custom(mc: str, loader: str, name: str, callback=None) -> str:
+def install_custom(mc: str, loader: str, name: str, callback=None, task_id=None) -> str:
     engine = _get_engine()
+    if task_id is not None:
+        # UI передал свой task_id — используем его напрямую без обвязки callback
+        return engine.install.install_custom(mc, loader, name, task_id)
     if callback is None:
         return engine.install.install_custom(mc, loader, name, None)
     task_id = f"install:{name}:{uuid.uuid4().hex[:6]}"
@@ -1519,8 +1522,12 @@ def is_build_update_available(name: str, manifest: dict | None = None) -> bool:
     return _get_engine().install.is_build_update_available(name, manifest)
 
 
-def download_build(name: str, url: str | None = None, callback=None) -> None:
+def download_build(name: str, url: str | None = None, callback=None, task_id=None) -> None:
     engine = _get_engine()
+    if task_id is not None:
+        # UI передал свой task_id — используем его напрямую без обвязки callback
+        engine.install.download_build(name, url, task_id)
+        return
     if callback is None:
         engine.install.download_build(name, url, None)
         return
@@ -1532,8 +1539,12 @@ def download_build(name: str, url: str | None = None, callback=None) -> None:
         _shim_detach_callback(engine, task_id)
 
 
-def update_build(name: str, callback=None) -> None:
+def update_build(name: str, callback=None, task_id=None) -> None:
     engine = _get_engine()
+    if task_id is not None:
+        # UI передал свой task_id — используем его напрямую без обвязки callback
+        engine.install.update_build(name, task_id)
+        return
     if callback is None:
         engine.install.update_build(name, None)
         return
