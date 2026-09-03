@@ -190,12 +190,12 @@ class UITaskManager:
 
     def start_task(self, target_task_id, on_progress, on_finished):
         """Подписаться на download_progress и task_finished для task_id."""
-        def progress_handler(task_id, current, total, status_text):
+        def progress_handler(task_id, current=None, total=None, status_text=None):
             if task_id != target_task_id:
                 return
             self.window.after(0, lambda: on_progress(current, total, status_text))
 
-        def finished_handler(task_id, success, message):
+        def finished_handler(task_id, success=None, message=None):
             if task_id != target_task_id:
                 return
             self.window.after(0, lambda: on_finished(success, message))
