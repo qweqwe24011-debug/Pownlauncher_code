@@ -607,10 +607,15 @@ class JavaManager:
                 candidates.append(c)
         jr = self.config.java_dir()
         if os.path.isdir(jr):
+            # Check subdirectories (e.g., jdk-21.xxx/bin/java.exe)
             for n in os.listdir(jr):
                 c = os.path.join(jr, n, "bin", exe)
                 if os.path.isfile(c):
                     candidates.append(c)
+            # Also check root directory directly (e.g., jre/bin/java.exe)
+            c_root = os.path.join(jr, "bin", exe)
+            if os.path.isfile(c_root):
+                candidates.append(c_root)
         for c in candidates:
             if self._java_major(c) == need:
                 self.logger.debug(f"Found Java {need} at {c}")
@@ -671,8 +676,39 @@ class JavaManager:
         except Exception as e:
             self.logger.error(f"Failed to download Java {need}: {e}")
             raise RuntimeError(f"Не удалось скачать Java {need}: {e}")
-        with zipfile.ZipFile(zp, "r") as z:
-            z.extractall(jr)
+        
+        # Determine archive type by magic bytes
+        is_tar_gz = False
+        with open(zp, "rb") as f:
+            magic = f.read(2)
+            if magic == b'\x1f\x8b':  # gzip magic number
+                is_tar_gz = True
+        
+        if is_tar_gz:
+            import tarfile
+            with tarfile.open(zp, "r:gz") as t:
+                t.extractall(jr)
+        else:
+            with zipfile.ZipFile(zp, "r") as z:
+                # Handle case where archive contains files directly in root (jre structure)
+                # vs nested in a folder (jdk structure)
+                members = z.namelist()
+                # Check if all files are under a single top-level directory
+                top_dirs = set()
+                for m in members:
+                    parts = m.split('/')
+                    if parts[0]:
+                        top_dirs.add(parts[0])
+                
+                # If there's only one top-level directory (like jdk-21.xxx), extract normally
+                # If there are multiple top-level entries (bin/, lib/, etc.), extract to a subfolder
+                if len(top_dirs) > 1 and 'bin' in [d.lower() for d in top_dirs]:
+                    # This is a JRE-style archive with files in root, create a versioned subfolder
+                    extract_base = os.path.join(jr, f"jdk-{need}")
+                    os.makedirs(extract_base, exist_ok=True)
+                    z.extractall(extract_base)
+                else:
+                    z.extractall(jr)
         os.remove(zp)
         found = self._find_java(need)
         if not found:
