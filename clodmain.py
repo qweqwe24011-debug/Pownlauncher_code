@@ -235,6 +235,7 @@ class FileSystemManager:
     def __init__(self, logger: LoggerManager, config: ConfigManager):
         self.logger = logger
         self.config = config
+        self._write_lock = threading.Lock()
 
     def json_read(self, path: str) -> dict | None:
         try:
@@ -251,7 +252,23 @@ class FileSystemManager:
             json.dump(data, f, ensure_ascii=False, indent=2)
             f.flush()
             os.fsync(f.fileno())
-        os.replace(temp_path, path)
+        # Retry logic for WinError 32 (file in use)
+        for attempt in range(3):
+            try:
+                with self._write_lock:
+                    os.replace(temp_path, path)
+                return
+            except (PermissionError, OSError) as e:
+                self.logger.warning(f"json_write attempt {attempt + 1} failed for {path}: {e}")
+                if attempt < 2:
+                    time.sleep(0.1)
+                else:
+                    self.logger.error(f"json_write FAILED after 3 attempts: {path}")
+                    # Clean up temp file to avoid leaving garbage
+                    try:
+                        os.remove(temp_path)
+                    except Exception:
+                        pass
 
     def get_free_space_gb(self, path: str) -> float:
         try:
@@ -607,6 +624,11 @@ class JavaManager:
                 candidates.append(c)
         jr = self.config.java_dir()
         if os.path.isdir(jr):
+            # Сначала проверяем плоскую структуру (bin/ прямо в java_dir)
+            flat_bin = os.path.join(jr, "bin", exe)
+            if os.path.isfile(flat_bin):
+                candidates.append(flat_bin)
+            # Затем проверяем вложенную структуру (jdk*/bin/)
             for n in os.listdir(jr):
                 c = os.path.join(jr, n, "bin", exe)
                 if os.path.isfile(c):
