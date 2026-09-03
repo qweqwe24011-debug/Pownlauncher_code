@@ -12,34 +12,35 @@ import clodmain
 ctk.set_appearance_mode("dark")
 
 # ============================================================
-#  MINECRAFT THEME
+#  MINECRAFT MATERIALS THEME
 # ============================================================
-BG = "#0c0c0e"                # почти черный фон как в меню
-BG_CARD = "#2b2b2b"           # каменно-серый блок
-BG_CARD_HOVER = "#3d3d3d"     # светлее при наведении
-BG_INPUT = "#1a1a1a"          # поля ввода
+BG = "#1E1E2E"                # Deepslate (глубинный сланец) — основной фон окна
+BG_CARD = "#2D2D3D"           # Netherite (незерит) — карточки, блоки
+BG_CARD_HOVER = "#3D3D4D"     # Светлее при наведении
+BG_INPUT = "#252535"          # Поля ввода (чуть темнее карточек)
 
-STONE_LIGHT = "#6b6b6b"       # светлый камень
-STONE_DARK = "#4a4a4a"        # темный камень
-STONE_BORDER = "#1f1f1f"      # рамка блока
-ACCENT = "#55AA55"            # minecraft зеленый (трава)
-ACCENT_HOVER = "#77CC77"
-ACCENT_DARK = "#3d8a3d"
+STONE_LIGHT = "#4A4A5A"       # Светлый камень (для кнопок)
+STONE_DARK = "#3A3A4A"        # Тёмный камень
+STONE_BORDER = "#3D3D4D"      # Рамка (границы блоков)
 
-DANGER = "#AA4444"            # minecraft красный
-DANGER_HOVER = "#cc6666"
-DANGER_DARK = "#883333"
+ACCENT = "#3D7A3D"            # Moss (мох) — основной акцент, кнопка ИГРАТЬ
+ACCENT_HOVER = "#4D8A4D"      # Светлее при наведении
+ACCENT_DARK = "#2D5A2D"       # Тёмный мох
 
-WARNING = "#FFAA00"           # золотой
-SUCCESS = "#55AA55"
-ERROR = "#ff5555"
+DANGER = "#8B0000"            # Redstone (редстоун) — кнопки удаления
+DANGER_HOVER = "#A52A2A"      # Светлее при наведении
+DANGER_DARK = "#6B0000"       # Тёмный редстоун
 
-TEXT_PRIMARY = "#ffffff"
-TEXT_SECONDARY = "#b0b0b0"
-TEXT_MUTED = "#777777"
-TEXT_SHADOW = "#3f3f3f"       # цвет "тени" текста
+WARNING = "#B8860B"           # Gold (золото) — обновления, предупреждения
+SUCCESS = "#3D7A3D"           # Moss (мох) — успех
+ERROR = "#CC3333"             # Яркий редстоун для текстов ошибок (чтобы не сливался с кнопками)
 
-BORDER = "#1a1a1a"
+TEXT_PRIMARY = "#E0E0E0"      # Skeleton (кость) — основной текст
+TEXT_SECONDARY = "#A0A0B0"    # Stone (камень) — вторичный текст
+TEXT_MUTED = "#808090"        # Приглушённый текст (чуть светлее для читаемости на тёмном фоне)
+TEXT_SHADOW = "#1A1A2A"       # Тень текста
+
+BORDER = "#3D3D4D"            # Границы
 
 # Шрифт в стиле Minecraft (monospace bold)
 MC_FONT = ("Consolas", 13, "bold")
@@ -48,12 +49,12 @@ MC_FONT_SMALL = ("Consolas", 11, "bold")
 MC_FONT_TITLE = ("Consolas", 26, "bold")
 
 LOADER_INFO = {
-    "vanilla":  {"label": "Vanilla",  "color": "#55AA55", "bg": "#1a3a1a"},
-    "forge":    {"label": "Forge",    "color": "#FFAA00", "bg": "#3a2a0a"},
-    "fabric":   {"label": "Fabric",   "color": "#AA88FF", "bg": "#2a1a3a"},
-    "neoforge": {"label": "NeoForge", "color": "#FF8844", "bg": "#3a1f0a"},
-    "quilt":    {"label": "Quilt",    "color": "#FF88BB", "bg": "#3a1a2a"},
-    "build":    {"label": "Сборка",   "color": "#AA88FF", "bg": "#2a1a3a"},
+    "vanilla":  {"label": "Vanilla",   "color": "#3D7A3D", "bg": "#1A3A1A"},  # Moss (Зелёный)
+    "forge":    {"label": "Forge",     "color": "#B8860B", "bg": "#3A2A0A"},  # Gold (Золотой)
+    "fabric":   {"label": "Fabric",    "color": "#4A90E2", "bg": "#1A2A4A"},  # Diamond (Голубой)
+    "neoforge": {"label": "NeoForge",  "color": "#D2691E", "bg": "#3A1F0A"},  # Chocolate (Оранжевый)
+    "quilt":    {"label": "Quilt",     "color": "#9370DB", "bg": "#2A1A3A"},  # Purpur (Фиолетовый)
+    "build":    {"label": "Сборка",    "color": "#E0E0E0", "bg": "#3D3D4D"},  # Bedrock (Серый/Белый)
 }
 
 _all_loaders = [("Vanilla", "vanilla"), ("Forge", "forge"), ("Fabric", "fabric"),
