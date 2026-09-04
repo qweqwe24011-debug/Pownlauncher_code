@@ -235,6 +235,7 @@ class FileSystemManager:
     def __init__(self, logger: LoggerManager, config: ConfigManager):
         self.logger = logger
         self.config = config
+        self._write_lock = threading.Lock()
 
     def json_read(self, path: str) -> dict | None:
         try:
@@ -251,7 +252,23 @@ class FileSystemManager:
             json.dump(data, f, ensure_ascii=False, indent=2)
             f.flush()
             os.fsync(f.fileno())
-        os.replace(temp_path, path)
+        # Retry logic for WinError 32 (file in use)
+        for attempt in range(3):
+            try:
+                with self._write_lock:
+                    os.replace(temp_path, path)
+                return
+            except (PermissionError, OSError) as e:
+                self.logger.warning(f"json_write attempt {attempt + 1} failed for {path}: {e}")
+                if attempt < 2:
+                    time.sleep(0.1)
+                else:
+                    self.logger.error(f"json_write FAILED after 3 attempts: {path}")
+                    # Clean up temp file to avoid leaving garbage
+                    try:
+                        os.remove(temp_path)
+                    except Exception:
+                        pass
 
     def get_free_space_gb(self, path: str) -> float:
         try:
@@ -607,6 +624,11 @@ class JavaManager:
                 candidates.append(c)
         jr = self.config.java_dir()
         if os.path.isdir(jr):
+            # Сначала проверяем плоскую структуру (bin/ прямо в java_dir)
+            flat_bin = os.path.join(jr, "bin", exe)
+            if os.path.isfile(flat_bin):
+                candidates.append(flat_bin)
+            # Затем проверяем вложенную структуру (jdk*/bin/)
             for n in os.listdir(jr):
                 c = os.path.join(jr, n, "bin", exe)
                 if os.path.isfile(c):
@@ -1473,8 +1495,11 @@ def is_custom_installed(name: str) -> bool:
     return _get_engine().install.is_custom_installed(name)
 
 
-def install_custom(mc: str, loader: str, name: str, callback=None) -> str:
+def install_custom(mc: str, loader: str, name: str, callback=None, task_id=None) -> str:
     engine = _get_engine()
+    if task_id is not None:
+        # UI передал свой task_id — используем его напрямую без обвязки callback
+        return engine.install.install_custom(mc, loader, name, task_id)
     if callback is None:
         return engine.install.install_custom(mc, loader, name, None)
     task_id = f"install:{name}:{uuid.uuid4().hex[:6]}"
@@ -1497,8 +1522,12 @@ def is_build_update_available(name: str, manifest: dict | None = None) -> bool:
     return _get_engine().install.is_build_update_available(name, manifest)
 
 
-def download_build(name: str, url: str | None = None, callback=None) -> None:
+def download_build(name: str, url: str | None = None, callback=None, task_id=None) -> None:
     engine = _get_engine()
+    if task_id is not None:
+        # UI передал свой task_id — используем его напрямую без обвязки callback
+        engine.install.download_build(name, url, task_id)
+        return
     if callback is None:
         engine.install.download_build(name, url, None)
         return
@@ -1510,8 +1539,12 @@ def download_build(name: str, url: str | None = None, callback=None) -> None:
         _shim_detach_callback(engine, task_id)
 
 
-def update_build(name: str, callback=None) -> None:
+def update_build(name: str, callback=None, task_id=None) -> None:
     engine = _get_engine()
+    if task_id is not None:
+        # UI передал свой task_id — используем его напрямую без обвязки callback
+        engine.install.update_build(name, task_id)
+        return
     if callback is None:
         engine.install.update_build(name, None)
         return
