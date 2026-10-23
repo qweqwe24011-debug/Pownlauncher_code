@@ -1589,7 +1589,48 @@ class LauncherEngine:
         popen_kwargs = {"cwd": d}
         if sys.platform == "win32":
             popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
-        return subprocess.Popen(cmd, **popen_kwargs)
+        proc = subprocess.Popen(cmd, **popen_kwargs)
+        # Фоновая инъекция оверлея (только Windows, если DLL на месте и функция включена)
+        try:
+            self.maybe_inject_overlay(proc, d)
+        except Exception as e:
+            self.logger.debug(f"Overlay injection skipped: {e}")
+        return proc
+
+    # ---------- внутриигровой оверлей ----------
+
+    def overlay_enabled(self) -> bool:
+        """Оверлей включён, если в profile.json overlay != false (по умолчанию выключен)."""
+        settings = self.fs.json_read(self.config.settings_path) or {}
+        return bool(settings.get("overlay", False))
+
+    def maybe_inject_overlay(self, proc: subprocess.Popen, game_dir: str) -> None:
+        """Запустить фоновую инъекцию PownOverlay.dll после старта игры."""
+        if sys.platform != "win32":
+            return
+        if not self.overlay_enabled():
+            return
+        import overlay_injector as oi
+        dll = oi.default_dll_path(self.config.base_dir)
+        if not dll:
+            self.logger.info("[Overlay] PownOverlay.dll не найдена — инъекция пропущена")
+            return
+        sentinel = os.path.join(game_dir, ".overlay_injected")
+        if os.path.isfile(sentinel):
+            self.logger.debug("[Overlay] Sentinel найден — повторная инъекция не требуется")
+            return
+        oi.inject_overlay_async(
+            proc, dll, logger=self.logger,
+            wait_seconds=int(self.overlay_wait_seconds()),
+            sentinel_path=sentinel,
+        )
+
+    def overlay_wait_seconds(self) -> int:
+        settings = self.fs.json_read(self.config.settings_path) or {}
+        try:
+            return max(5, min(60, int(settings.get("overlay_wait", 10))))
+        except (TypeError, ValueError):
+            return 10
 
     def launch_custom(self, name: str, mc: str, loader: str, user: str, ram: int | None = None) -> subprocess.Popen:
         d = self.config.custom_dir(name)

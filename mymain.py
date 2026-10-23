@@ -332,6 +332,24 @@ def prof():
                fg_color=STONE_DARK, hover_color=STONE_LIGHT, text_color=TEXT_SECONDARY,
                font=MC_FONT_SMALL).pack(pady=(8, 0))
 
+    # ---------- внутриигровой оверлей (Windows) ----------
+    overlay_var = ctk.BooleanVar(value=bool(settings.get("overlay", False)))
+    if os.name == "nt":
+        ctk.CTkFrame(prwin, fg_color=STONE_BORDER, height=2).pack(fill="x", padx=24, pady=(16, 12))
+        ctk.CTkLabel(prwin, text="ВНУТРИИГРОВОЙ ОВЕРЛЕЙ", font=MC_FONT_SMALL,
+                     text_color=TEXT_MUTED).pack(anchor="w", padx=28)
+        ov_check = ctk.CTkCheckBox(
+            prwin, text="Инжектить PownOverlay.dll после запуска игры",
+            variable=overlay_var, font=MC_FONT_SMALL, text_color=TEXT_SECONDARY,
+            checkbox_width=20, checkbox_height=20, corner_radius=0,
+            fg_color=ACCENT, hover_color=ACCENT_HOVER, border_color=STONE_BORDER)
+        ov_check.pack(anchor="w", pady=(6, 2), padx=28)
+        ctk.CTkLabel(
+            prwin,
+            text="DLL: overlay/PownOverlay.dll рядом с лаунчером.\n"
+                 "F2 в игре — скрыть/показать. Антивирус может требовать исключения.",
+            font=MC_FONT_SMALL, text_color=TEXT_MUTED, justify="left").pack(anchor="w", padx=28, pady=(0, 6))
+
     def save():
         global username, ram_gb
         new_nick = prent.get().strip()
@@ -339,7 +357,12 @@ def prof():
             return
         username = new_nick
         ram_gb = int(ram_slider.get())
-        clodmain.save_settings({"username": username, "ram_gb": ram_gb})
+        payload = {"username": username, "ram_gb": ram_gb}
+        if os.name == "nt":
+            payload["overlay"] = bool(overlay_var.get())
+        clodmain.save_settings(payload)
+        settings.clear()
+        settings.update(clodmain.load_settings())
         prwin.destroy()
         title_label.configure(text=f"Играете как {username}")
 
