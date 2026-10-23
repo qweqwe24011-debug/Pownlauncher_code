@@ -1,4 +1,5 @@
 import os
+import sys
 import time
 import threading
 import uuid
@@ -12,34 +13,35 @@ import clodmain
 ctk.set_appearance_mode("dark")
 
 # ============================================================
-#  MINECRAFT THEME
+#  REAL MINECRAFT BLOCKS THEME (база #222223)
 # ============================================================
-BG = "#0c0c0e"                # почти черный фон как в меню
-BG_CARD = "#2b2b2b"           # каменно-серый блок
-BG_CARD_HOVER = "#3d3d3d"     # светлее при наведении
-BG_INPUT = "#1a1a1a"          # поля ввода
+BG = "#222223"                # Гладкий базальт — основной фон (нейтральный графит)
+BG_CARD = "#2B2B2B"           # Уголь — карточки, блоки
+BG_CARD_HOVER = "#383838"     # Светлее при наведении
+BG_INPUT = "#1A1A1A"          # Обсидиан — поля ввода (глубина)
 
-STONE_LIGHT = "#6b6b6b"       # светлый камень
-STONE_DARK = "#4a4a4a"        # темный камень
-STONE_BORDER = "#1f1f1f"      # рамка блока
-ACCENT = "#55AA55"            # minecraft зеленый (трава)
-ACCENT_HOVER = "#77CC77"
-ACCENT_DARK = "#3d8a3d"
+STONE_LIGHT = "#7F7F7F"       # Камень — светлые кнопки
+STONE_DARK = "#4E4B4C"        # Гладкий базальт — тёмные кнопки
+STONE_BORDER = "#3B3B3B"      # Рамка блоков
 
-DANGER = "#AA4444"            # minecraft красный
-DANGER_HOVER = "#cc6666"
-DANGER_DARK = "#883333"
+ACCENT = "#728F24"            # Мох — основной акцент, кнопка ИГРАТЬ
+ACCENT_HOVER = "#75932E"      # Светлее при наведении
+ACCENT_DARK = "#728F24"       # Тёмный мох
 
-WARNING = "#FFAA00"           # золотой
-SUCCESS = "#55AA55"
-ERROR = "#ff5555"
+DANGER = "#ff0000"            # Редстоуновый блок — кнопки удаления
+DANGER_HOVER = "#B02020"      # Светлее при наведении
+DANGER_DARK = "#a90e00"       # Тёмный редстоун
 
-TEXT_PRIMARY = "#ffffff"
-TEXT_SECONDARY = "#b0b0b0"
-TEXT_MUTED = "#777777"
-TEXT_SHADOW = "#3f3f3f"       # цвет "тени" текста
+WARNING = "#D4A017"           # Золотой блок (приглушённый) — обновления
+SUCCESS = "#2FCB54"           # Изумрудный блок — успех
+ERROR = "#FF3B3B"             # Редстоун (яркий) — тексты ошибок
 
-BORDER = "#1a1a1a"
+TEXT_PRIMARY = "#E5E0D0"      # Костный блок — основной текст
+TEXT_SECONDARY = "#A0A0A0"    # Камень — вторичный текст
+TEXT_MUTED = "#7A7A7A"        # Приглушённый текст
+TEXT_SHADOW = "#100D17"       # Обсидиан — тень текста
+
+BORDER = "#3B3B3B"            # Границы блоков
 
 # Шрифт в стиле Minecraft (monospace bold)
 MC_FONT = ("Consolas", 13, "bold")
@@ -48,12 +50,12 @@ MC_FONT_SMALL = ("Consolas", 11, "bold")
 MC_FONT_TITLE = ("Consolas", 26, "bold")
 
 LOADER_INFO = {
-    "vanilla":  {"label": "Vanilla",  "color": "#55AA55", "bg": "#1a3a1a"},
-    "forge":    {"label": "Forge",    "color": "#FFAA00", "bg": "#3a2a0a"},
-    "fabric":   {"label": "Fabric",   "color": "#AA88FF", "bg": "#2a1a3a"},
-    "neoforge": {"label": "NeoForge", "color": "#FF8844", "bg": "#3a1f0a"},
-    "quilt":    {"label": "Quilt",    "color": "#FF88BB", "bg": "#3a1a2a"},
-    "build":    {"label": "Сборка",   "color": "#AA88FF", "bg": "#2a1a3a"},
+    "vanilla":  {"label": "Vanilla",   "color": "#7CBD6B", "bg": "#2A3B1A"},  # Трава
+    "forge":    {"label": "Forge",     "color": "#D8D8D8", "bg": "#3A3A3A"},  # Железо
+    "fabric":   {"label": "Fabric",    "color": "#62E5D8", "bg": "#1A3A3A"},  # Алмаз
+    "neoforge": {"label": "NeoForge",  "color": "#B4653A", "bg": "#3A2A1A"},  # Медь
+    "quilt":    {"label": "Quilt",     "color": "#A97DAB", "bg": "#2A1A2A"},  # Пурпур
+    "build":    {"label": "Сборка",    "color": "#E5E0D0", "bg": "#3B3B3B"},  # Кость
 }
 
 _all_loaders = [("Vanilla", "vanilla"), ("Forge", "forge"), ("Fabric", "fabric"),
@@ -112,10 +114,18 @@ threading.Thread(target=_prefetch_versions, daemon=True).start()
 def _wheel(scrollable_frame, speed=6):
     canvas = scrollable_frame._parent_canvas
     def on_wheel(event):
-        canvas.yview_scroll(int(-speed * (event.delta / 120)), "units")
+        if event.num == 4:
+            d = 1
+        elif event.num == 5:
+            d = -1
+        else:
+            d = event.delta / 120
+        canvas.yview_scroll(int(-speed * d), "units")
         return "break"
     def bind_tree(widget):
         widget.bind("<MouseWheel>", on_wheel)
+        widget.bind("<Button-4>", on_wheel)
+        widget.bind("<Button-5>", on_wheel)
         for child in widget.winfo_children():
             bind_tree(child)
     bind_tree(scrollable_frame)
@@ -189,25 +199,27 @@ class UITaskManager:
 
     def start_task(self, task_id, on_progress, on_finished):
         """Подписаться на download_progress и task_finished для task_id."""
-        def progress_handler(task_id_evt, current, total, status_text):
-            if task_id_evt != task_id:
+        target_task_id = task_id
+        
+        def progress_handler(task_id, current, total, status_text):
+            if task_id != target_task_id:
                 return
             self.window.after(0, lambda: on_progress(current, total, status_text))
 
-        def finished_handler(task_id_evt, success, message):
-            if task_id_evt != task_id:
+        def finished_handler(task_id, success, message):
+            if task_id != target_task_id:
                 return
             self.window.after(0, lambda: on_finished(success, message))
             # Автоотписка
-            self.cancel_task(task_id)
+            self.cancel_task(target_task_id)
 
         self.event_bus.subscribe("download_progress", progress_handler)
         self.event_bus.subscribe("task_finished", finished_handler)
-        self._handlers[task_id] = (progress_handler, finished_handler)
+        self._handlers[target_task_id] = (progress_handler, finished_handler)
 
-    def cancel_task(self, task_id):
+    def cancel_task(self, target_task_id):
         """Принудительная отписка по task_id."""
-        handlers = self._handlers.pop(task_id, None)
+        handlers = self._handlers.pop(target_task_id, None)
         if handlers:
             prog, fin = handlers
             self.event_bus.unsubscribe("download_progress", prog)
@@ -215,27 +227,45 @@ class UITaskManager:
 
     def cleanup(self):
         """Отписать все активные задачи (при закрытии окна)."""
-        for task_id in list(self._handlers.keys()):
-            self.cancel_task(task_id)
+        for target_task_id in list(self._handlers.keys()):
+            self.cancel_task(target_task_id)
 
 
 # ---------- main window ----------
 
+if sys.platform == "win32":
+    # отдельный AppUserModelID — иконка на панели задач не сливается с иконкой Python
+    try:
+        import ctypes
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("Plauncher.Launcher")
+    except Exception:
+        pass
+
 win = ctk.CTk()
 win.geometry("900x800")
-win.title("Plauncher")
+win.title(f"Plauncher {clodmain.APP_VERSION}")
 win.resizable(False, False)
 win.configure(fg_color=BG)
 
-# Иконка окна
-try:
-    from PIL import ImageTk
-    icon_pil = Image.open(clodmain.resource_path("icon.png"))
-    icon_tk = ImageTk.PhotoImage(icon_pil)
-    win.iconphoto(True, icon_tk)
-    win._icon_ref = icon_tk
-except Exception:
-    pass
+# Иконка окна. customtkinter на Windows через ~200 мс ставит свою синюю иконку,
+# поэтому свою задаём позже.
+def _apply_window_icon():
+    try:
+        if sys.platform == "win32":
+            ico = clodmain.resource_path("icon.ico")
+            if os.path.isfile(ico):
+                win.iconbitmap(ico)
+                return
+        from PIL import ImageTk
+        icon_pil = Image.open(clodmain.resource_path("icon.png"))
+        icon_tk = ImageTk.PhotoImage(icon_pil)
+        win.iconphoto(True, icon_tk)
+        win._icon_ref = icon_tk
+    except Exception:
+        pass
+
+
+win.after(400, _apply_window_icon)
 
 selected_entry = {"data": None}
 row_frames = []
@@ -290,7 +320,11 @@ def prof():
             if os.name == "nt":
                 os.startfile(log_path)
             else:
-                webbrowser.open(f"file://{log_path}")
+                import subprocess
+                try:
+                    subprocess.Popen(["xdg-open", log_path])
+                except Exception:
+                    webbrowser.open(f"file://{log_path}")
         else:
             bottom_status.configure(text="Лог-файл еще не создан", text_color=WARNING)
 
@@ -471,7 +505,7 @@ def open_custom_installer():
             ctk.CTkLabel(ask, text="⚠", font=("Consolas", 32, "bold"), text_color=WARNING).pack(pady=(16, 4))
             ctk.CTkLabel(ask, text=f"{folder} уже установлена.",
                          font=MC_FONT, text_color=TEXT_PRIMARY).pack()
-            ctk.CTkLabel(ask, text="Удалить и установить заново?",
+            ctk.CTkLabel(ask, text="Миры сохранятся. Переустановить?",
                          font=MC_FONT_SMALL, text_color=TEXT_MUTED).pack(pady=(0, 12))
             f = ctk.CTkFrame(ask, fg_color="transparent")
             f.pack()
@@ -523,10 +557,8 @@ def open_custom_installer():
                 if not clodmain.is_loader_supported(mc, loader):
                     raise RuntimeError(f"Версия {mc} не поддерживается лоадером {loader.capitalize()}")
                 if force:
-                    import shutil
-                    d = clodmain.custom_dir(folder)
-                    if os.path.isdir(d):
-                        shutil.rmtree(d, ignore_errors=True)
+                    # миры сохраняются в backups и вернутся после установки
+                    clodmain.delete_custom(folder, keep_worlds=True)
                 clodmain.install_custom(mc, loader, folder, task_id=task_id)
             except Exception as e:
                 engine.event_bus.emit("task_finished", task_id=task_id, success=False, message=str(e))
@@ -547,7 +579,7 @@ def open_custom_installer():
 
 def open_build_downloader():
     clodmain.cleanup_broken()
-    bwin = _modal(win, "Скачать сборку", 460, 540)
+    bwin = _modal(win, "Скачать сборку", 460, 620)
     h = ctk.CTkFrame(bwin, fg_color="transparent", height=60)
     h.pack(fill="x", padx=24, pady=(20, 0))
     if _chest_img:
@@ -584,6 +616,12 @@ def open_build_downloader():
                                  fg_color=WARNING, hover_color="#d97706",
                                  text_color=BG, font=MC_FONT_SMALL)
     update_all_btn.pack(side="left", padx=4)
+
+    # Прогресс скачивания: упаковываем снизу ДО списка, чтобы им хватило места
+    # (сверху вниз: статус, полоса, проценты)
+    pct_lbl.pack(side="bottom", pady=(0, 10))
+    bar.pack(side="bottom", pady=4, padx=24)
+    status_lbl.pack(side="bottom", pady=(6, 0))
 
     rows_frame = ctk.CTkScrollableFrame(bwin, fg_color="transparent", width=400, height=280,
                                          scrollbar_button_color=STONE_BORDER, scrollbar_button_hover_color=STONE_LIGHT)
@@ -693,6 +731,15 @@ def open_build_downloader():
                 bar.set(p)
                 pct_lbl.configure(text=f"{int(p * 100)}%", text_color=ACCENT)
             status_lbl.configure(text=status_text, text_color=TEXT_SECONDARY)
+            # надпись на самой кнопке (зелёном кубе): процент или этап
+            if btn.winfo_exists():
+                if "Распаковка" in status_text:
+                    btn_text = "Распаковка"
+                elif total > 0:
+                    btn_text = f"{int(p * 100)}%"
+                else:
+                    btn_text = "..."
+                btn.configure(text=btn_text)
 
         def on_finished(success, message):
             busy["active"] = False
@@ -712,7 +759,7 @@ def open_build_downloader():
 
         task_mgr.start_task(task_id, on_progress, on_finished)
         busy["active"] = True
-        btn.configure(state="disabled", text="...")
+        btn.configure(state="disabled", text="0%")
         bar.set(0)
         pct_lbl.configure(text="0%", text_color=TEXT_MUTED)
 
@@ -1063,7 +1110,7 @@ title_block.pack(side="left")
 if _icon_img:
     ctk.CTkLabel(title_block, image=_icon_img, text="").pack(side="left", padx=(0, 6))
 
-ctk.CTkLabel(title_block, text="Plauncher", font=MC_FONT_TITLE, text_color=TEXT_PRIMARY).pack(anchor="w")
+ctk.CTkLabel(title_block, text="Pownlauncher", font=MC_FONT_TITLE, text_color=TEXT_PRIMARY).pack(anchor="w")
 title_label = ctk.CTkLabel(title_block, text=f"Играете как {username}",
                             font=MC_FONT_SMALL, text_color=TEXT_MUTED)
 title_label.pack(anchor="w")
@@ -1108,5 +1155,99 @@ def _check_deps_bg():
     threading.Thread(target=worker, daemon=True).start()
 
 win.after(200, _check_deps_bg)
+
+
+# ---------- автообновление лаунчера ----------
+def _show_update_dialog(info):
+    dlg = _modal(win, "Обновление Plauncher", 440, 300)
+    ctk.CTkLabel(dlg, text="Доступно обновление", font=MC_FONT_BIG,
+                 text_color=ACCENT).pack(pady=(18, 4))
+    ctk.CTkLabel(dlg, text=f"Версия {info['version']}  (у вас {clodmain.APP_VERSION})",
+                 font=MC_FONT, text_color=TEXT_PRIMARY).pack()
+    notes = info.get("notes", "").strip()
+    if notes:
+        ctk.CTkLabel(dlg, text=notes[:300], font=MC_FONT_SMALL, text_color=TEXT_SECONDARY,
+                     wraplength=380, justify="left").pack(pady=(10, 0), padx=20)
+    status_lbl = ctk.CTkLabel(dlg, text="", font=MC_FONT_SMALL, text_color=TEXT_MUTED,
+                              wraplength=380)
+    status_lbl.pack(pady=(10, 0))
+    bar = ctk.CTkProgressBar(dlg, width=380, height=14, corner_radius=0,
+                             progress_color=ACCENT, fg_color=STONE_DARK)
+    bar.set(0)
+
+    btns = ctk.CTkFrame(dlg, fg_color="transparent")
+    btns.pack(side="bottom", pady=16)
+    later_btn = _mc_button(btns, text="Позже", command=dlg.destroy, width=130, height=38,
+                           fg_color=STONE_DARK, hover_color=STONE_LIGHT,
+                           text_color=TEXT_SECONDARY, font=MC_FONT_SMALL)
+    later_btn.pack(side="left", padx=4)
+
+    if not clodmain.can_self_update():
+        status_lbl.configure(text="Лаунчер запущен из исходников — обновите файлы вручную.",
+                             text_color=WARNING)
+        return
+
+    def start_update():
+        update_btn.configure(state="disabled")
+        later_btn.configure(state="disabled")
+        dlg.protocol("WM_DELETE_WINDOW", lambda: None)
+        bar.pack(pady=(6, 0))
+        task_id = f"ui:launcher_update:{uuid.uuid4().hex[:6]}"
+
+        def on_progress(current, total, status_text):
+            if total > 0:
+                p = min(current / total, 1.0)
+                bar.set(p)
+                status_lbl.configure(text=f"{status_text}  {int(p * 100)}%",
+                                     text_color=TEXT_SECONDARY)
+            else:
+                status_lbl.configure(text=status_text, text_color=TEXT_SECONDARY)
+
+        def on_finished(success, message):
+            if success:
+                status_lbl.configure(text="Перезапуск...", text_color=SUCCESS)
+                try:
+                    clodmain.restart_launcher()
+                except Exception as e:
+                    status_lbl.configure(text=f"Обновлено. Запустите лаунчер вручную ({e})",
+                                         text_color=WARNING)
+                    later_btn.configure(state="normal", text="Закрыть", command=win.destroy)
+                    return
+                win.destroy()
+            else:
+                status_lbl.configure(text=f"Ошибка: {message}", text_color=ERROR)
+                dlg.protocol("WM_DELETE_WINDOW", dlg.destroy)
+                later_btn.configure(state="normal", text="Закрыть")
+
+        main_task_mgr.start_task(task_id, on_progress, on_finished)
+
+        def worker():
+            try:
+                path = clodmain.download_launcher_update(info, task_id)
+                clodmain.apply_launcher_update(path)
+                _main_engine.event_bus.emit("task_finished", task_id=task_id,
+                                            success=True, message="ok")
+            except Exception as e:
+                _main_engine.event_bus.emit("task_finished", task_id=task_id,
+                                            success=False, message=str(e))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    update_btn = _mc_button(btns, text="Обновить", command=start_update, width=150, height=38,
+                            fg_color=ACCENT, hover_color=ACCENT_HOVER,
+                            text_color=TEXT_PRIMARY, font=MC_FONT_SMALL)
+    update_btn.pack(side="left", padx=4)
+
+
+def _check_update_bg():
+    def worker():
+        info = clodmain.check_launcher_update()
+        if info:
+            win.after(0, lambda: _show_update_dialog(info))
+    threading.Thread(target=worker, daemon=True).start()
+
+
+clodmain.cleanup_update_leftovers()
+win.after(1500, _check_update_bg)
 
 win.mainloop()
