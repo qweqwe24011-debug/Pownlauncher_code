@@ -18,13 +18,15 @@ import subprocess
 import sys
 import threading
 import time
-import traceback
 import urllib.request
 import uuid
 import zipfile
 from logging.handlers import RotatingFileHandler
 
 import minecraft_launcher_lib as mll
+
+# Версия лаунчера. Повышай перед каждой сборкой релиза.
+APP_VERSION = "1.0.0"
 
 
 # ============================================================
@@ -80,6 +82,9 @@ class ConfigManager:
         ]
         self.legacy_re = re.compile(r"^1\.(\d+)(?:\.\d+)*$")
         self.valid_nick_re = re.compile(r"^[a-zA-Z0-9_]{3,16}$")
+        self._settings_lock = threading.Lock()
+        # launcher.json лежит рядом с builds.json в том же репозитории
+        self.update_manifest_url = self.manifest_url.rsplit("/", 1)[0] + "/launcher.json"
 
     def _resolve_base_dir(self) -> str:
         if getattr(sys, "frozen", False):
@@ -114,6 +119,13 @@ class ConfigManager:
         return os.path.join(self.base_dir, "java")
 
     def log_path(self) -> str:
+        cached = getattr(self, "_log_path_cached", None)
+        if cached:
+            return cached
+        self._log_path_cached = self._compute_log_path()
+        return self._log_path_cached
+
+    def _compute_log_path(self) -> str:
         p = os.path.join(self.base_dir, "plauncher.log")
         try:
             with open(p + ".tmp", "w") as f:
@@ -140,14 +152,15 @@ class ConfigManager:
             return {}
 
     def save_settings(self, data: dict) -> None:
-        cur = self.load_settings()
-        cur.update(data)
-        if self.fs is not None:
-            self.fs.json_write(self.settings_path, cur)
-        else:
-            os.makedirs(os.path.dirname(self.settings_path) or ".", exist_ok=True)
-            with open(self.settings_path, "w", encoding="utf-8") as f:
-                json.dump(cur, f, ensure_ascii=False, indent=2)
+        with self._settings_lock:
+            cur = self.load_settings()
+            cur.update(data)
+            if self.fs is not None:
+                self.fs.json_write(self.settings_path, cur)
+            else:
+                os.makedirs(os.path.dirname(self.settings_path) or ".", exist_ok=True)
+                with open(self.settings_path, "w", encoding="utf-8") as f:
+                    json.dump(cur, f, ensure_ascii=False, indent=2)
 
 
 # ============================================================
@@ -235,6 +248,7 @@ class FileSystemManager:
     def __init__(self, logger: LoggerManager, config: ConfigManager):
         self.logger = logger
         self.config = config
+        self._write_lock = threading.RLock()
 
     def json_read(self, path: str) -> dict | None:
         try:
@@ -245,13 +259,33 @@ class FileSystemManager:
             return None
 
     def json_write(self, path: str, data: dict) -> None:
+        with self._write_lock:
+            self._json_write_impl(path, data)
+
+    def _json_write_impl(self, path: str, data: dict) -> None:
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         temp_path = path + ".tmp"
         with open(temp_path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
             f.flush()
             os.fsync(f.fileno())
-        os.replace(temp_path, path)
+        # Retry logic for WinError 32 (file in use)
+        for attempt in range(3):
+            try:
+                with self._write_lock:
+                    os.replace(temp_path, path)
+                return
+            except (PermissionError, OSError) as e:
+                self.logger.warning(f"json_write attempt {attempt + 1} failed for {path}: {e}")
+                if attempt < 2:
+                    time.sleep(0.1)
+                else:
+                    self.logger.error(f"json_write FAILED after 3 attempts: {path}")
+                    # Clean up temp file to avoid leaving garbage
+                    try:
+                        os.remove(temp_path)
+                    except Exception:
+                        pass
 
     def get_free_space_gb(self, path: str) -> float:
         try:
@@ -368,7 +402,8 @@ class DownloadManager:
         self._versions_lock = threading.Lock()
 
     def download(self, url: str, dest: str, task_id: str | None = None,
-                 max_retries: int = 3) -> None:
+                 max_retries: int = 3, progress_range: tuple | None = None,
+                 status_text: str = "Downloading...") -> None:
         self.logger.info(f"Downloading {url} -> {dest}")
         req = urllib.request.Request(
             url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Plauncher"}
@@ -379,12 +414,23 @@ class DownloadManager:
                 last_update = 0
                 with urllib.request.urlopen(req, timeout=120) as resp:
                     total = int(resp.headers.get("Content-Length", 0))
+
+                    def _emit(cur):
+                        if progress_range and total > 0:
+                            lo, hi = progress_range
+                            self.event_bus.emit(
+                                "download_progress", task_id=task_id,
+                                current=lo + (hi - lo) * cur / total, total=100,
+                                status_text=status_text
+                            )
+                        else:
+                            self.event_bus.emit(
+                                "download_progress", task_id=task_id,
+                                current=cur, total=total,
+                                status_text=status_text
+                            )
                     if task_id:
-                        self.event_bus.emit(
-                            "download_progress",
-                            task_id=task_id, current=0, total=total,
-                            status_text="Downloading..."
-                        )
+                        _emit(0)
                     with open(dest, "wb") as f:
                         while True:
                             chunk = resp.read(262144)
@@ -394,12 +440,10 @@ class DownloadManager:
                             downloaded += len(chunk)
                             now = time.time()
                             if now - last_update > 0.2 and task_id:
-                                self.event_bus.emit(
-                                    "download_progress",
-                                    task_id=task_id, current=downloaded,
-                                    total=total, status_text="Downloading..."
-                                )
+                                _emit(downloaded)
                                 last_update = now
+                    if task_id:
+                        _emit(downloaded)
                 self.logger.info(f"Download complete: {dest} ({downloaded} bytes)")
                 return
             except urllib.error.HTTPError as e:
@@ -455,6 +499,7 @@ class DownloadManager:
                 self.logger.debug(f"Cache read error: {e}")
 
         data = None
+        fetched_ok = False
         try:
             self.logger.info(f"Fetching manifest from {self.config.manifest_url}")
             req = urllib.request.Request(
@@ -465,6 +510,7 @@ class DownloadManager:
                 data = json.loads(resp.read().decode("utf-8"))
             if isinstance(data, dict):
                 self.fs.json_write(cache_path, data)
+                fetched_ok = True
         except Exception as e:
             self.logger.error(f"Failed to fetch manifest: {e}")
 
@@ -477,10 +523,33 @@ class DownloadManager:
                 self.logger.debug("Using in-memory manifest cache (post-fetch race)")
                 return self._manifest_mem
             self._manifest_mem = data if data is not None else {}
-            self._manifest_mem_time = now
+            # при неудаче сети повторяем попытку через минуту, а не через час
+            self._manifest_mem_time = now if fetched_ok else now - self.config.manifest_cache_ttl + 60
             if not self._manifest_mem:
                 self.logger.warning("No manifest available (offline and no cache)")
             return self._manifest_mem
+
+    def cached_manifest(self) -> dict:
+        """Манифест без блокирующего запроса в сеть (для UI-потока).
+
+        Отдаёт память/диск; если данные устарели — обновляет в фоне."""
+        data = self._manifest_mem
+        if data is None:
+            data = self.fs.json_read(self.config.manifest_cache_path) or {}
+        stale = (self._manifest_mem is None or
+                 time.time() - self._manifest_mem_time >= self.config.manifest_cache_ttl)
+        if stale and not getattr(self, "_bg_refreshing", False):
+            self._bg_refreshing = True
+
+            def _bg():
+                try:
+                    self.fetch_manifest(force=True)
+                except Exception as e:
+                    self.logger.debug(f"bg manifest refresh failed: {e}")
+                finally:
+                    self._bg_refreshing = False
+            threading.Thread(target=_bg, daemon=True).start()
+        return data
 
     def manifest_info(self) -> dict:
         builds = self.fetch_manifest()
@@ -522,7 +591,7 @@ class DownloadManager:
         if release_only in self._versions_cache:
             return self._versions_cache[release_only]
 
-        cached = self._load_versions_cache()
+        cached = self._load_versions_cache() if release_only else None
         if cached is not None:
             try:
                 mtime = os.path.getmtime(self.config.versions_cache_file)
@@ -546,7 +615,8 @@ class DownloadManager:
                 vid for vid in ids
                 if not (m := self.config.legacy_re.match(vid)) or int(m.group(1)) >= 6
             ]
-            self._save_versions_cache(result)
+            if release_only:
+                self._save_versions_cache(result)
             self.logger.info(f"versions fetched from network, count={len(result)}")
         except Exception as e:
             self.logger.error(f"versions fetch failed: {e}")
@@ -579,12 +649,24 @@ class JavaManager:
         self.config = config
         self.fs = fs
         self.dl = dl
+        self._major_cache: dict[str, int] = {}
 
     def _java_major(self, exe: str) -> int | None:
+        if exe in self._major_cache:
+            return self._major_cache[exe]
+        result = self._java_major_uncached(exe)
+        if result is not None:
+            self._major_cache[exe] = result
+        return result
+
+    def _java_major_uncached(self, exe: str) -> int | None:
         try:
-            r = subprocess.run([exe, "-version"], capture_output=True, text=True, timeout=10)
+            kw = {}
+            if sys.platform == "win32":
+                kw["creationflags"] = subprocess.CREATE_NO_WINDOW
+            r = subprocess.run([exe, "-version"], capture_output=True, text=True, timeout=10, **kw)
             out = r.stderr or r.stdout
-            m = re.search(r'version "(\d+)(?:\.(\d+))?"', out)
+            m = re.search(r'version "(\d+)(?:\.(\d+))?', out)
             if not m:
                 return None
             major = int(m.group(1))
@@ -607,11 +689,16 @@ class JavaManager:
                 candidates.append(c)
         jr = self.config.java_dir()
         if os.path.isdir(jr):
+            # Сначала проверяем плоскую структуру (bin/ прямо в java_dir)
+            flat_bin = os.path.join(jr, "bin", exe)
+            if os.path.isfile(flat_bin):
+                candidates.append(flat_bin)
+            # Затем проверяем вложенную структуру (jdk*/bin/)
             for n in os.listdir(jr):
                 c = os.path.join(jr, n, "bin", exe)
                 if os.path.isfile(c):
                     candidates.append(c)
-        for c in candidates:
+        for c in dict.fromkeys(candidates):
             if self._java_major(c) == need:
                 self.logger.debug(f"Found Java {need} at {c}")
                 return c
@@ -621,6 +708,10 @@ class JavaManager:
     def java_for_mc(self, mc: str) -> int:
         m = re.match(r"^1\.(\d+)(?:\.(\d+))?", mc)
         if not m:
+            # новая схема версий (26.1, 26.1.2 ...): Minecraft 26.x требует Java 25
+            y = re.match(r"^(\d{2,})\.", mc)
+            if y and int(y.group(1)) >= 26:
+                return 25
             return 17
         major = int(m.group(1))
         minor = int(m.group(2)) if m.group(2) else 0
@@ -671,8 +762,13 @@ class JavaManager:
         except Exception as e:
             self.logger.error(f"Failed to download Java {need}: {e}")
             raise RuntimeError(f"Не удалось скачать Java {need}: {e}")
-        with zipfile.ZipFile(zp, "r") as z:
-            z.extractall(jr)
+        if zipfile.is_zipfile(zp):
+            with zipfile.ZipFile(zp, "r") as z:
+                z.extractall(jr)
+        else:
+            import tarfile
+            with tarfile.open(zp) as t:
+                t.extractall(jr)
         os.remove(zp)
         found = self._find_java(need)
         if not found:
@@ -698,6 +794,7 @@ class InstallationManager:
         self.dl = dl
         self.java = java
         self.event_bus = event_bus
+        self._active: set[str] = set()
 
     def _has_neoforge(self) -> bool:
         if not hasattr(mll, "mod_loader"):
@@ -720,9 +817,10 @@ class InstallationManager:
         if loader == "forge":
             return mll.forge.find_forge_version(mc) is not None
         m = self.config.legacy_re.match(mc)
-        if not m:
+        modern = m is None and re.match(r"^\d{2,}\.\d+", mc) is not None
+        if m is None and not modern:
             return False
-        v = int(m.group(1))
+        v = int(m.group(1)) if m else 999
         if loader == "fabric":
             return v >= 14
         if loader == "neoforge":
@@ -745,8 +843,11 @@ class InstallationManager:
             return
         for n in os.listdir(root):
             p = os.path.join(root, n)
+            if p in self._active:
+                continue
             if os.path.isdir(p) and os.path.isfile(os.path.join(p, ".installing")):
                 self.logger.warning(f"Cleaning up broken install: {n}")
+                self._rescue_worlds(p, n)
                 self.fs.safe_rmtree(p)
 
     def is_custom_installed(self, name: str) -> bool:
@@ -758,41 +859,154 @@ class InstallationManager:
         vd = os.path.join(d, "versions")
         return os.path.isdir(vd) and len(os.listdir(vd)) > 0
 
-    def _mll_callback_adapter(self, task_id: str | None):
-        """Адаптер: callback minecraft-launcher-lib → EventBus."""
+    def _mll_callback_adapter(self, task_id: str | None, plan: list | None = None):
+        """Адаптер: callback minecraft-launcher-lib -> EventBus.
+
+        plan — список этапов (ключ, название, вес). Общий процент считается
+        по всем этапам сразу и не откатывается назад, в статусе пишется
+        "Этап X/N: название".
+        """
         if task_id is None:
             return {"setStatus": lambda t: None,
                     "setProgress": lambda v: None,
-                    "setMax": lambda v: None}
+                    "setMax": lambda v: None,
+                    "beginStage": lambda key, lock=False: None}
+        if plan is None:
+            plan = [("java", "Java", 5),
+                    ("libs", "Библиотеки Minecraft", 35),
+                    ("assets", "Ресурсы игры", 45),
+                    ("runtime", "Среда Java для игры", 15)]
+        keys = [p[0] for p in plan]
+        weights = [p[2] for p in plan]
+        wsum = float(sum(weights))
+        n = len(plan)
+        phase_by_status = {
+            "Download Libraries": "libs",
+            "Download Assets": "assets",
+            "Install java runtime": "runtime",
+        }
+        st = {"idx": -1, "cur": 0, "max": 0, "overall": 0.0, "locked": False}
+
+        def emit():
+            idx = st["idx"]
+            if idx < 0:
+                frac, text = 0.0, "Подготовка..."
+            else:
+                frac = min(st["cur"] / st["max"], 1.0) if st["max"] > 0 else 0.0
+                text = f"Этап {idx + 1}/{n}: {plan[idx][1]}"
+                if st["max"] > 0:
+                    text += f" ({int(st['cur'])}/{int(st['max'])})"
+            done = sum(weights[:max(idx, 0)])
+            cur_w = weights[idx] * frac if idx >= 0 else 0.0
+            overall = max(st["overall"], (done + cur_w) / wsum * 100.0)
+            st["overall"] = overall
+            self.event_bus.emit(
+                "download_progress", task_id=task_id,
+                current=overall, total=100, status_text=text
+            )
+
+        def begin_stage(key, lock=False):
+            if key not in keys:
+                return
+            idx = keys.index(key)
+            if idx > st["idx"]:
+                st["idx"], st["cur"], st["max"] = idx, 0, 0
+            if lock:
+                st["locked"] = True
+            emit()
+
         def set_status(text):
-            self.event_bus.emit(
-                "download_progress", task_id=task_id,
-                current=0, total=0, status_text=text
-            )
+            if not st["locked"]:
+                key = phase_by_status.get(text)
+                if key:
+                    begin_stage(key)
+                    return
+            emit()
+
         def set_progress(value):
-            self.event_bus.emit(
-                "download_progress", task_id=task_id,
-                current=value, total=0, status_text=""
-            )
+            st["cur"] = value
+            emit()
+
         def set_max(value):
-            pass
-        return {"setStatus": set_status, "setProgress": set_progress, "setMax": set_max}
+            st["max"] = value
+            emit()
+
+        return {"setStatus": set_status, "setProgress": set_progress,
+                "setMax": set_max, "beginStage": begin_stage}
+
+    def _worlds_backup(self, name: str) -> str:
+        return os.path.join(self.config.base_dir, "backups", "worlds", name, "saves")
+
+    def _restore_worlds(self, d: str, name: str | None) -> bool:
+        """Скопировать миры из резервной копии в установленную версию (копия остаётся)."""
+        if not name:
+            return False
+        src = self._worlds_backup(name)
+        if not os.path.isdir(src):
+            return False
+        try:
+            shutil.copytree(src, os.path.join(d, "saves"), dirs_exist_ok=True)
+        except Exception as e:
+            self.logger.error(f"Failed to restore worlds for '{name}': {e}")
+            return False
+        self.logger.info(f"Worlds restored for '{name}' (backup kept)")
+        return True
+
+    def _rescue_worlds(self, d: str, name: str) -> None:
+        """Перед удалением сломанной установки сохранить её миры в backups."""
+        saves = os.path.join(d, "saves")
+        try:
+            if os.path.isdir(saves) and os.listdir(saves):
+                dst = self._worlds_backup(name)
+                os.makedirs(os.path.dirname(dst), exist_ok=True)
+                shutil.copytree(saves, dst, dirs_exist_ok=True)
+                self.logger.info(f"Worlds of broken install '{name}' saved to {dst}")
+        except Exception as e:
+            self.logger.error(f"Failed to rescue worlds for '{name}': {e}")
+
+    def _retry(self, fn, attempts: int = 3):
+        """Повторить установку при сбое загрузки (пустой/битый файл, обрыв сети).
+
+        minecraft-launcher-lib пропускает уже скачанные корректные файлы,
+        поэтому повтор докачивает только недостающее."""
+        import requests
+        for i in range(attempts):
+            try:
+                return fn()
+            except Exception as e:
+                transient = (isinstance(e, (requests.exceptions.RequestException, OSError))
+                             or "checksum" in str(e).lower())
+                if not transient or i == attempts - 1:
+                    raise
+                self.logger.warning(f"Download failed ({e}); retry {i + 2}/{attempts}")
+                time.sleep(2 * (i + 1))
 
     def _install_core(self, d: str, mc: str, loader: str,
-                      task_id: str | None = None) -> str:
+                      task_id: str | None = None, name: str | None = None) -> str:
         self.logger.info(f"Starting install: {mc} / {loader} -> {d}")
+        self._active.add(d)
         try:
             os.makedirs(d, exist_ok=True)
             flag = os.path.join(d, ".installing")
             open(flag, "w").close()
             if not self.fs.check_free_space(self.config.base_dir, 2.0, f"{mc}-{loader}"):
                 raise RuntimeError("Недостаточно свободного места на диске (нужно минимум 2 ГБ)")
+            if loader == "vanilla":
+                plan = None
+            else:
+                plan = [("java", "Java", 5),
+                        ("libs", "Библиотеки Minecraft", 25),
+                        ("assets", "Ресурсы игры", 35),
+                        ("runtime", "Среда Java для игры", 10),
+                        ("loader", f"Установка {loader.capitalize()}", 25)]
+            mll_cb = self._mll_callback_adapter(task_id, plan)
+            mll_cb["beginStage"]("java")
             self.java.get_java(self.java.java_for_mc(mc))
-            mll_cb = self._mll_callback_adapter(task_id)
-            mll.install.install_minecraft_version(
+            self._retry(lambda: mll.install.install_minecraft_version(
                 version=mc, minecraft_directory=d, callback=mll_cb
-            )
+            ))
             os.makedirs(os.path.join(d, "mods"), exist_ok=True)
+            self._restore_worlds(d, name)
             vd = os.path.join(d, "versions")
             if loader == "vanilla":
                 if task_id:
@@ -811,13 +1025,9 @@ class InstallationManager:
                 fv = mll.forge.find_forge_version(mc)
                 if fv is None:
                     raise RuntimeError(f"No Forge for {mc}")
-                if task_id:
-                    self.event_bus.emit(
-                        "download_progress", task_id=task_id,
-                        current=0, total=0, status_text=f"Installing Forge {fv}..."
-                    )
+                mll_cb["beginStage"]("loader", lock=True)
                 self.logger.info(f"Installing Forge {fv}")
-                mll.forge.install_forge_version(fv, d, callback=mll_cb)
+                self._retry(lambda: mll.forge.install_forge_version(fv, d, callback=mll_cb))
                 cands = [n for n in os.listdir(vd) if n != mc and mc in n]
                 result = cands[0] if cands else fv
                 if task_id:
@@ -827,13 +1037,9 @@ class InstallationManager:
                     )
                 return result
             if loader == "fabric":
-                if task_id:
-                    self.event_bus.emit(
-                        "download_progress", task_id=task_id,
-                        current=0, total=0, status_text=f"Installing Fabric for {mc}..."
-                    )
+                mll_cb["beginStage"]("loader", lock=True)
                 self.logger.info(f"Installing Fabric for {mc}")
-                mll.fabric.install_fabric(mc, d, callback=mll_cb)
+                self._retry(lambda: mll.fabric.install_fabric(mc, d, callback=mll_cb))
                 cands = [n for n in os.listdir(vd) if n.startswith("fabric-loader") and mc in n]
                 result = cands[0] if cands else next((n for n in os.listdir(vd) if n != mc), f"fabric-loader-{mc}")
                 if task_id:
@@ -849,14 +1055,10 @@ class InstallationManager:
                         "(нужна версия >= 8.0, использующая mod_loader). "
                         "Обновите: pip install --upgrade minecraft-launcher-lib"
                     )
-                if task_id:
-                    self.event_bus.emit(
-                        "download_progress", task_id=task_id,
-                        current=0, total=0, status_text=f"Installing NeoForge for {mc}..."
-                    )
+                mll_cb["beginStage"]("loader", lock=True)
                 self.logger.info(f"Installing NeoForge for {mc}")
                 nf_loader = self._get_neoforge_loader()
-                installed_vid = nf_loader.install(mc, d, callback=mll_cb)
+                installed_vid = self._retry(lambda: nf_loader.install(mc, d, callback=mll_cb))
                 self.logger.info(f"NeoForge installed: {installed_vid}")
                 if task_id:
                     self.event_bus.emit(
@@ -870,13 +1072,9 @@ class InstallationManager:
                         "Quilt не поддерживается установленной версией minecraft-launcher-lib. "
                         "Обновите: pip install --upgrade minecraft-launcher-lib"
                     )
-                if task_id:
-                    self.event_bus.emit(
-                        "download_progress", task_id=task_id,
-                        current=0, total=0, status_text=f"Installing Quilt for {mc}..."
-                    )
+                mll_cb["beginStage"]("loader", lock=True)
                 self.logger.info(f"Installing Quilt for {mc}")
-                mll.quilt.install_quilt(mc, d, callback=mll_cb)
+                self._retry(lambda: mll.quilt.install_quilt(mc, d, callback=mll_cb))
                 cands = [n for n in os.listdir(vd) if n.startswith("quilt-loader") and mc in n]
                 result = cands[0] if cands else next((n for n in os.listdir(vd) if n != mc), f"quilt-loader-{mc}")
                 if task_id:
@@ -896,13 +1094,14 @@ class InstallationManager:
                 )
             raise
         finally:
+            self._active.discard(d)
             flag = os.path.join(d, ".installing")
             if os.path.isfile(flag):
                 os.remove(flag)
 
     def install_custom(self, mc: str, loader: str, name: str,
                        task_id: str | None = None) -> str:
-        return self._install_core(self.config.custom_dir(name), mc, loader, task_id)
+        return self._install_core(self.config.custom_dir(name), mc, loader, task_id, name)
 
     def installed_build_version(self, name: str) -> str | None:
         meta = self.fs.json_read(os.path.join(self.config.custom_dir(name), ".build_meta.json"))
@@ -934,24 +1133,27 @@ class InstallationManager:
         flag = os.path.join(d, ".installing")
         open(flag, "w").close()
         self.logger.info(f"Downloading build '{name}' from {url}")
+        self._active.add(d)
         try:
             if task_id:
                 self.event_bus.emit(
                     "download_progress", task_id=task_id,
-                    current=0, total=0, status_text="Downloading..."
+                    current=0, total=100, status_text="Этап 1/2: Скачивание сборки"
                 )
             zp = os.path.join(d, "_dl.zip")
-            self.dl.download(url, zp, task_id=task_id)
+            self.dl.download(url, zp, task_id=task_id, progress_range=(0, 50),
+                             status_text="Этап 1/2: Скачивание сборки")
             if task_id:
                 self.event_bus.emit(
                     "download_progress", task_id=task_id,
-                    current=50, total=100, status_text="Extracting..."
+                    current=50, total=100, status_text="Этап 2/2: Распаковка"
                 )
             self.fs.extract_flat(zp, d, flag)
             self.fs.write_meta(
                 d, name, info.get("version", ""),
                 info.get("loader", "build"), info.get("mc_version", "")
             )
+            self._restore_worlds(d, name)
             self.logger.info(f"Build '{name}' installed successfully")
             if task_id:
                 self.event_bus.emit(
@@ -968,6 +1170,7 @@ class InstallationManager:
                 )
             raise
         finally:
+            self._active.discard(d)
             if os.path.isfile(flag):
                 os.remove(flag)
 
@@ -991,11 +1194,12 @@ class InstallationManager:
         flag = os.path.join(d, ".installing")
         open(flag, "w").close()
         self.logger.info(f"Updating build '{name}'")
+        self._active.add(d)
         try:
             if task_id:
                 self.event_bus.emit(
                     "download_progress", task_id=task_id,
-                    current=0, total=0, status_text="Backing up..."
+                    current=0, total=0, status_text="Этап 1/5: Резервная копия"
                 )
             for item in self.config.preserve_on_update:
                 src = os.path.join(d, item)
@@ -1009,7 +1213,7 @@ class InstallationManager:
             if task_id:
                 self.event_bus.emit(
                     "download_progress", task_id=task_id,
-                    current=10, total=100, status_text="Removing old..."
+                    current=10, total=100, status_text="Этап 2/5: Удаление старой версии"
                 )
             for e in os.listdir(d):
                 if e == os.path.basename(flag):
@@ -1022,20 +1226,21 @@ class InstallationManager:
             if task_id:
                 self.event_bus.emit(
                     "download_progress", task_id=task_id,
-                    current=20, total=100, status_text="Downloading..."
+                    current=20, total=100, status_text="Этап 3/5: Скачивание обновления"
                 )
             zp = os.path.join(d, "_dl.zip")
-            self.dl.download(url, zp, task_id=task_id)
+            self.dl.download(url, zp, task_id=task_id, progress_range=(20, 70),
+                             status_text="Этап 3/5: Скачивание обновления")
             if task_id:
                 self.event_bus.emit(
                     "download_progress", task_id=task_id,
-                    current=70, total=100, status_text="Extracting..."
+                    current=70, total=100, status_text="Этап 4/5: Распаковка"
                 )
             self.fs.extract_flat(zp, d, flag)
             if task_id:
                 self.event_bus.emit(
                     "download_progress", task_id=task_id,
-                    current=80, total=100, status_text="Restoring..."
+                    current=80, total=100, status_text="Этап 5/5: Восстановление данных"
                 )
             for item in self.config.preserve_on_update:
                 src = os.path.join(bak, item)
@@ -1082,9 +1287,124 @@ class InstallationManager:
                 )
             raise
         finally:
+            self._active.discard(d)
             self.fs.safe_rmtree(bak)
             if os.path.isfile(flag):
                 os.remove(flag)
+
+
+# ============================================================
+#  UpdateManager — самообновление лаунчера
+# ============================================================
+
+class UpdateManager:
+    """Проверка launcher.json, скачивание и замена собственного бинарника."""
+
+    def __init__(self, logger: LoggerManager, config: ConfigManager,
+                 fs: FileSystemManager, dl: DownloadManager):
+        self.logger = logger
+        self.config = config
+        self.fs = fs
+        self.dl = dl
+
+    @staticmethod
+    def _ver(v: str) -> tuple:
+        nums = [int(x) for x in re.findall(r"\d+", str(v))[:4]]
+        return tuple(nums + [0] * (4 - len(nums)))
+
+    @staticmethod
+    def _platform_key() -> str:
+        if sys.platform == "win32":
+            return "windows"
+        if sys.platform == "darwin":
+            return "macos"
+        return "linux"
+
+    @staticmethod
+    def _exe_path() -> str:
+        return os.path.abspath(sys.executable)
+
+    def can_self_update(self) -> bool:
+        """Заменять можно только собранный бинарник (PyInstaller) в доступной для записи папке."""
+        return (getattr(sys, "frozen", False)
+                and os.access(os.path.dirname(self._exe_path()), os.W_OK))
+
+    def check(self) -> dict | None:
+        """Вернуть {version, notes, url, sha256}, если есть версия новее, иначе None."""
+        try:
+            req = urllib.request.Request(
+                self.config.update_manifest_url, headers={"User-Agent": "Plauncher"}
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+        except Exception as e:
+            self.logger.debug(f"Update check failed: {e}")
+            return None
+        version = str(data.get("version", ""))
+        if not version or self._ver(version) <= self._ver(APP_VERSION):
+            return None
+        asset = data.get(self._platform_key()) or {}
+        url = asset.get("url") if isinstance(asset, dict) else None
+        if not url:
+            self.logger.warning(f"Update {version} has no build for {self._platform_key()}")
+            return None
+        self.logger.info(f"Launcher update available: {APP_VERSION} -> {version}")
+        return {"version": version, "notes": str(data.get("notes", "")),
+                "url": url, "sha256": str(asset.get("sha256", "")).lower()}
+
+    def download(self, info: dict, task_id: str | None = None) -> str:
+        dest = self._exe_path() + ".new"
+        self.dl.download(info["url"], dest, task_id=task_id,
+                         status_text="Скачивание обновления")
+        want = info.get("sha256")
+        if want:
+            import hashlib
+            h = hashlib.sha256()
+            with open(dest, "rb") as f:
+                for chunk in iter(lambda: f.read(1 << 20), b""):
+                    h.update(chunk)
+            if h.hexdigest().lower() != want:
+                self.fs.safe_remove(dest)
+                raise RuntimeError("Контрольная сумма обновления не совпала")
+        return dest
+
+    def apply(self, new_path: str) -> None:
+        """Заменить запущенный бинарник новым (со откатом при ошибке)."""
+        exe = self._exe_path()
+        if sys.platform == "win32":
+            # запущенный exe нельзя перезаписать, но можно переименовать
+            old = exe + ".old"
+            self.fs.safe_remove(old)
+            os.replace(exe, old)
+            try:
+                os.replace(new_path, exe)
+            except Exception:
+                os.replace(old, exe)
+                raise
+        else:
+            os.chmod(new_path, 0o755)
+            os.replace(new_path, exe)
+        self.logger.info(f"Launcher updated: {exe}")
+
+    def restart(self) -> None:
+        """Запустить новую копию лаунчера (старый процесс завершает вызывающий)."""
+        exe = self._exe_path()
+        env = dict(os.environ)
+        # PyInstaller onefile: новый процесс не должен наследовать временную папку старого
+        env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
+        kw = {"env": env, "close_fds": True, "cwd": os.path.dirname(exe)}
+        if sys.platform == "win32":
+            kw["creationflags"] = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+        else:
+            kw["start_new_session"] = True
+        subprocess.Popen([exe], **kw)
+
+    def cleanup_leftovers(self) -> None:
+        if not getattr(sys, "frozen", False):
+            return
+        exe = self._exe_path()
+        for suffix in (".old", ".new"):
+            self.fs.safe_remove(exe + suffix)
 
 
 # ============================================================
@@ -1106,6 +1426,7 @@ class LauncherEngine:
         self.install = InstallationManager(
             self.logger, self.config, self.fs, self.dl, self.java, self.event_bus
         )
+        self.updater = UpdateManager(self.logger, self.config, self.fs, self.dl)
 
     def ensure_dependencies(self) -> str:
         if getattr(sys, "frozen", False):
@@ -1174,6 +1495,11 @@ class LauncherEngine:
                 return s.ullTotalPhys / (1024 ** 3)
             except Exception:
                 pass
+        try:
+            with open("/proc/meminfo") as f:
+                return int(f.readline().split()[1]) / (1024 ** 2)
+        except Exception:
+            pass
         return 8.0
 
     def get_recommended_ram(self, fraction: float = 0.75) -> int:
@@ -1210,12 +1536,47 @@ class LauncherEngine:
             return mc
         raise RuntimeError("Not installed")
 
+    @staticmethod
+    def _offline_uuid(user: str) -> str:
+        """Стабильный UUID игрока (как у офлайн-режима Minecraft), а не случайный."""
+        import hashlib
+        h = hashlib.md5(("OfflinePlayer:" + user).encode("utf-8")).digest()
+        return str(uuid.UUID(bytes=h, version=3))
+
+    def _ensure_os_libraries(self, d: str, vid: str) -> None:
+        """Докачать библиотеки и natives для текущей ОС (один раз на ОС).
+
+        Готовые сборки часто собраны на другой системе (например, на Windows),
+        и в них нет lwjgl natives для Linux -> UnsatisfiedLinkError: liblwjgl.so.
+        mll пропускает уже скачанные файлы и докачивает только недостающие."""
+        marker = os.path.join(d, f".libs_ok_{sys.platform}")
+        if os.path.isfile(marker):
+            return
+        vj = self.fs.json_read(os.path.join(d, "versions", vid, f"{vid}.json")) or {}
+        base = vj.get("inheritsFrom") or vid
+        self.logger.info(f"Checking libraries for {sys.platform} ({base})...")
+        try:
+            self._retry_install(lambda: mll.install.install_minecraft_version(
+                version=base, minecraft_directory=d
+            ))
+        except Exception as e:
+            self.logger.error(f"Library check failed: {e}")
+            return
+        try:
+            open(marker, "w").close()
+        except OSError:
+            pass
+
+    def _retry_install(self, fn):
+        return self.install._retry(fn)
+
     def _launch(self, d: str, vid: str, mc: str, user: str, ram: int | None) -> subprocess.Popen:
         ram = ram if ram else self.get_recommended_ram()
         java = self.java.get_java(self.java.java_for_mc(mc))
+        self._ensure_os_libraries(d, vid)
         opts = {
-            "username": user, "uuid": str(uuid.uuid4()), "token": "",
-            "gameDirectory": d, "jvmArguments": [f"-Xmx{ram}G", "-Xmn128M"],
+            "username": user, "uuid": self._offline_uuid(user), "token": "",
+            "gameDirectory": d, "jvmArguments": [f"-Xmx{ram}G"],
         }
         self.logger.info(f"Launching {mc} ({vid}) as {user} with {ram}GB RAM")
         cmd = mll.command.get_minecraft_command(version=vid, minecraft_directory=d, options=opts)
@@ -1256,7 +1617,8 @@ class LauncherEngine:
         if not os.path.isdir(root):
             return []
         self.install.cleanup_broken()
-        manifest = self.dl.fetch_manifest()
+        manifest = self.dl.cached_manifest()
+        play_times = self._load_playtime()
         result = []
         for n in os.listdir(root):
             p = os.path.join(root, n)
@@ -1271,7 +1633,7 @@ class LauncherEngine:
                     "loader": meta.get("loader", "build"),
                     "version": meta.get("version"),
                     "update_available": self.install.is_build_update_available(n, manifest),
-                    "play_time_minutes": self._get_play_time(n),
+                    "play_time_minutes": play_times.get(n, 0),
                 })
                 continue
             if "-" in n:
@@ -1281,7 +1643,7 @@ class LauncherEngine:
             result.append({
                 "folder_name": n, "mc_version": mc, "loader": loader,
                 "version": None, "update_available": False,
-                "play_time_minutes": self._get_play_time(n),
+                "play_time_minutes": play_times.get(n, 0),
             })
 
         def sort_key(entry):
@@ -1349,16 +1711,18 @@ _shim_registry: dict[str, tuple[callable, callable]] = {}
 
 
 def _shim_attach_callback(engine: LauncherEngine, task_id: str, callback: dict) -> None:
-    def on_progress(task_id_evt, current, total, status_text):
-        if task_id_evt != task_id:
+    target_id = task_id
+
+    def on_progress(task_id, current, total, status_text):
+        if task_id != target_id:
             return
         if total:
             callback.get("setMax", lambda v: None)(total)
         callback.get("setProgress", lambda v: None)(current)
         callback.get("setStatus", lambda t: None)(status_text)
 
-    def on_finished(task_id_evt, success, message):
-        if task_id_evt != task_id:
+    def on_finished(task_id, success, message):
+        if task_id != target_id:
             return
 
     engine.event_bus.subscribe("download_progress", on_progress)
@@ -1473,8 +1837,11 @@ def is_custom_installed(name: str) -> bool:
     return _get_engine().install.is_custom_installed(name)
 
 
-def install_custom(mc: str, loader: str, name: str, callback=None) -> str:
+def install_custom(mc: str, loader: str, name: str, callback=None, task_id=None) -> str:
     engine = _get_engine()
+    if task_id is not None:
+        # UI передал свой task_id — используем его напрямую без обвязки callback
+        return engine.install.install_custom(mc, loader, name, task_id)
     if callback is None:
         return engine.install.install_custom(mc, loader, name, None)
     task_id = f"install:{name}:{uuid.uuid4().hex[:6]}"
@@ -1497,8 +1864,12 @@ def is_build_update_available(name: str, manifest: dict | None = None) -> bool:
     return _get_engine().install.is_build_update_available(name, manifest)
 
 
-def download_build(name: str, url: str | None = None, callback=None) -> None:
+def download_build(name: str, url: str | None = None, callback=None, task_id=None) -> None:
     engine = _get_engine()
+    if task_id is not None:
+        # UI передал свой task_id — используем его напрямую без обвязки callback
+        engine.install.download_build(name, url, task_id)
+        return
     if callback is None:
         engine.install.download_build(name, url, None)
         return
@@ -1510,8 +1881,12 @@ def download_build(name: str, url: str | None = None, callback=None) -> None:
         _shim_detach_callback(engine, task_id)
 
 
-def update_build(name: str, callback=None) -> None:
+def update_build(name: str, callback=None, task_id=None) -> None:
     engine = _get_engine()
+    if task_id is not None:
+        # UI передал свой task_id — используем его напрямую без обвязки callback
+        engine.install.update_build(name, task_id)
+        return
     if callback is None:
         engine.install.update_build(name, None)
         return
@@ -1537,3 +1912,27 @@ def open_instance_folder_path(path: str) -> None:
 
 def add_play_time(name: str, minutes: int) -> None:
     _get_engine().add_play_time(name, minutes)
+
+
+def check_launcher_update() -> dict | None:
+    return _get_engine().updater.check()
+
+
+def can_self_update() -> bool:
+    return _get_engine().updater.can_self_update()
+
+
+def download_launcher_update(info: dict, task_id: str | None = None) -> str:
+    return _get_engine().updater.download(info, task_id)
+
+
+def apply_launcher_update(new_path: str) -> None:
+    _get_engine().updater.apply(new_path)
+
+
+def restart_launcher() -> None:
+    _get_engine().updater.restart()
+
+
+def cleanup_update_leftovers() -> None:
+    _get_engine().updater.cleanup_leftovers()
